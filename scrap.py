@@ -3,7 +3,13 @@ import os
 import lxml.etree as et
 from tidylib import tidy_document as TD
 import shutil
+from PIL import Image
 from lxml.etree import HTMLParser
+import shutil
+try:
+    from urllib.request import urlretrieve  # Python 3
+except ImportError:
+    from urllib import urlretrieve
 
 try:
     from StringIO import StringIO
@@ -48,8 +54,8 @@ class Template:
 class BlogSpider(scrapy.Spider):
     name = 'blogspider'
     # start_urls = ['http://www.vinadia.org/dem-giua-ban-ngay-vu-thu-hien/']
-    # start_urls = ['http://www.vinadia.org/den-cu-tran-dinh/']
-    start_urls = ['http://www.vinadia.org/ai-giet-anh-em-ngo-dinh-diem/']
+    start_urls = ['http://www.vinadia.org/nhan-van-giai-pham-thuy-khue/']
+    # start_urls = ['http://www.vinadia.org/ai-giet-anh-em-ngo-dinh-diem/']
     html_tmpl = Template(os.path.join(TMPL_DIR, 'html.html'))
     content_tmpl = Template(os.path.join(TMPL_DIR, 'content.opf'))
     toc_tmpl = Template(os.path.join(TMPL_DIR, 'toc.ncx'))
@@ -66,6 +72,8 @@ class BlogSpider(scrapy.Spider):
     def parse(self, response):
         self.html_tmpl.new_content()
         self.fill_meta(response)
+
+        self.download_cover(response)
 
         content = response.css('div#content').extract_first()
         self.html_tmpl.set_body(content)
@@ -159,3 +167,17 @@ class BlogSpider(scrapy.Spider):
     def fix_xhtml(self, content):
         v, e = TD(content, options={'output-xhtml': 1})
         return v
+
+    def download_cover(self, response):
+        shutil.copy(os.path.join(TMPL_DIR, 'cover.jpeg'), os.path.join(OUT_DIR, 'cover.jpeg'))
+        src = response.css('div#content img::attr(src)').extract_first()
+        if src:
+            _, r = urlretrieve(src, 'cover')
+            type = r.get_content_type().split('/')[1]
+            shutil.move('cover', 'cover.' + type)
+            if type != 'jpeg':
+                img = Image.open('cover.' + type)
+                img.save('cover.jpeg')
+            shutil.move('cover.jpeg', os.path.join(OUT_DIR, 'cover.jpeg'))
+
+
