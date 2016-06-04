@@ -6,6 +6,9 @@ import shutil
 from PIL import Image
 from lxml.etree import HTMLParser
 import shutil
+import re
+import random
+import codecs
 try:
     from urllib.request import urlretrieve  # Python 3
 except ImportError:
@@ -54,7 +57,7 @@ class Template:
 class BlogSpider(scrapy.Spider):
     name = 'blogspider'
     # start_urls = ['http://www.vinadia.org/dem-giua-ban-ngay-vu-thu-hien/']
-    start_urls = ['http://www.vinadia.org/nhan-van-giai-pham-thuy-khue/']
+    start_urls = ['http://vnthuquan.net/truyen/truyen.aspx?tid=2qtqv3m3237nvntnmn2n1n31n343tq83a3q3m3237nvn']
     # start_urls = ['http://www.vinadia.org/ai-giet-anh-em-ngo-dinh-diem/']
     html_tmpl = Template(os.path.join(TMPL_DIR, 'html.html'))
     content_tmpl = Template(os.path.join(TMPL_DIR, 'content.opf'))
@@ -73,7 +76,7 @@ class BlogSpider(scrapy.Spider):
         self.html_tmpl.new_content()
         self.fill_meta(response)
 
-        self.download_cover(response)
+        # self.download_cover(response)
 
         content = response.css('div#content').extract_first()
         self.html_tmpl.set_body(content)
@@ -88,23 +91,29 @@ class BlogSpider(scrapy.Spider):
         os.makedirs(self.html_dir)
 
         self.html_tmpl.set_body(content)
-        f = open(os.path.join(self.html_dir, '00.html'), 'w')
+        f = codecs.open(os.path.join(self.html_dir, '00.html'), mode='w', encoding='utf-8')
         f.write(content)
 
         nav_points = ''
         manifest_itmes = ''
         toc_refs = ''
 
-        chapters = response.css('#sidebar ul li a')
+        chapters = response.xpath('//div[@id="muluben_to"]//div[@onclick]')
         for c in chapters:
             self.index += 1
-            href = c.css('::attr(href)').extract_first()
-            text = c.css('::text').extract_first()
-            request = scrapy.Request(href, callback=self.parse_chapter)
+            text = c.css('a::text').extract_first()
+            onclick = c.css('::attr(onclick)').extract_first()
+            m = re.match(r'.*\((.*)\)', onclick)
+            body = m.group(1)[1:len(m.group(1))-1]
+            url = 'http://vnthuquan.net/truyen/chuonghoi_moi.aspx?&rand=' + str(random.random()*1000)
+            headers = {'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded'}
+            request = scrapy.Request(url, callback=self.parse_chapter, method='POST', body=body, 
+                                    headers=headers)
             request.meta['_index'] = self.index
+            
             yield request
 
-            nav_points += """
+            nav_points += u"""
             <navPoint id="a{0:0>2}" playOrder="{0}">
                 <navLabel>
                     <text>{1}</text>
@@ -112,48 +121,61 @@ class BlogSpider(scrapy.Spider):
                 <content src="html/{0:0>2}.html"/>
             </navPoint>""".format(self.index, text)
 
-            manifest_itmes += """
+            manifest_itmes += u"""
             <item href="html/{0:0>2}.html" id="id{0:0>2}" media-type="application/x-dtbncx+xml"/>""".format(self.index)
 
-            toc_refs += """
+            toc_refs += u"""
             <itemref idref="id{:0>2}"/>""".format(self.index)
 
         # Build toc.ncx
         title = response.xpath('//title/text()').extract_first()
         self.toc_tmpl.replace('__NAV_POINTS__', nav_points)
         self.toc_tmpl.replace('__TITLE__', title)
-        f = open(os.path.join(OUT_DIR, 'toc.ncx'), 'w')
+        f = codecs.open(os.path.join(OUT_DIR, 'toc.ncx'), mode='w', encoding='utf-8')
         f.write(self.toc_tmpl.content)
 
         # Build content.opf
         self.content_tmpl.replace('__TITLE__', title)
         self.content_tmpl.replace('__MANIFEST_ITEMS__', manifest_itmes)
         self.content_tmpl.replace('__TOC_REFS__', toc_refs)
-        f = open(os.path.join(OUT_DIR, 'content.opf'), 'w')
+        f = codecs.open(os.path.join(OUT_DIR, 'content.opf'), mode='w', encoding='utf-8')
         f.write(self.content_tmpl.content)
 
     def parse_chapter(self, response):
         self.html_tmpl.new_content()
         self.fill_meta(response)
 
-        content = response.css('div#content').extract_first()
+        content = response.text
+        token = '--!!tach_noi_dung!!--'
+        idx = [i.start() for i in re.finditer(token, content)]
+        content = content[idx[1]+len(token):idx[2]]
+        content = u'<div>{}</div>'.format(content)
         self.html_tmpl.set_body(content)
 
         content = self.html_tmpl.content
         content = self.remove_tag_by_class(content, 'ssba')
         content = self.remove_tag_by_class(content, 'breadcrumb')
+        content = self.remove_tag_by_id(content, 'chuhoain')
         content = self.fix_xhtml(content)
 
-        f = open(os.path.join(self.html_dir, '{:0>2}.html'.format(response.meta['_index'])), 'w')
+        f = codecs.open(os.path.join(self.html_dir, '{:0>2}.html'.format(response.meta['_index'])), mode='w', encoding='utf-8')
         f.write(content)
 
     def fill_meta(self, response):
         title = response.xpath('//title/text()').extract_first()
-        content_type = response.xpath('//meta[@http-equiv="Content-Type"]/@content').extract_first()
-        description = response.xpath('//meta[@name="description"]/@content').extract_first()
-        self.html_tmpl.set_title(title)
-        self.html_tmpl.set_content_type(content_type)
-        self.html_tmpl.set_description(description)
+        content_type = response.xpath('//meta[re:test(@http-equiv, "(?i)content-type")]/@content').extract_first()
+        description = response.xpath('//meta[re:test(@name, "(?i)description")]/@content').extract_first()
+        self.html_tmpl.set_title(title if title else '')
+        self.html_tmpl.set_content_type(content_type if content_type else 'text/html; charset=UTF-8')
+        self.html_tmpl.set_description(description if description else '')
+
+    def remove_tag_by_id(self, content, id):
+        # return content
+        parser = HTMLParser(encoding='utf-8', recover=True)
+        tree = et.parse(StringIO(content), parser)
+        for element in tree.xpath('//div[@id="{}"]'.format(id)):
+            element.getparent().remove(element)
+        return et.tostring(tree, encoding='utf-8', with_tail=False).decode('utf-8')
 
     def remove_tag_by_class(self, content, cls):
         # return content
@@ -162,9 +184,9 @@ class BlogSpider(scrapy.Spider):
         for element in tree.xpath('//div[contains(@class, "{}")]'.format(cls)):
             element.getparent().remove(element)
         return et.tostring(tree, encoding='utf-8', with_tail=False).decode('utf-8')
-        # return "".join([e.decode('utf-8') for e in et.tostringlist(tree)])
 
     def fix_xhtml(self, content):
+        # return content
         v, e = TD(content, options={'output-xhtml': 1})
         return v
 
