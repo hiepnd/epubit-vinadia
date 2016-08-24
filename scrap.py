@@ -9,6 +9,9 @@ import shutil
 import re
 import random
 import codecs
+from scrapy.shell import inspect_response
+import string
+
 try:
     from urllib.request import urlretrieve  # Python 3
 except ImportError:
@@ -57,13 +60,14 @@ class Template:
 class BlogSpider(scrapy.Spider):
     name = 'blogspider'
     # start_urls = ['http://www.vinadia.org/dem-giua-ban-ngay-vu-thu-hien/']
-    start_urls = ['http://vnthuquan.net/truyen/truyen.aspx?tid=2qtqv3m3237nvntnmn2n1n31n343tq83a3q3m3237nvn']
+    start_urls = ['http://vnthuquan.net/truyen/truyen.aspx?tid=2qtqv3m3237nqnnn1nqn31n343tq83a3q3m3237nvn']
     # start_urls = ['http://www.vinadia.org/ai-giet-anh-em-ngo-dinh-diem/']
     html_tmpl = Template(os.path.join(TMPL_DIR, 'html.html'))
     content_tmpl = Template(os.path.join(TMPL_DIR, 'content.opf'))
     toc_tmpl = Template(os.path.join(TMPL_DIR, 'toc.ncx'))
     index = 0
     html_dir = os.path.join(OUT_DIR, 'html')
+    images_dir = os.path.join(OUT_DIR, 'images')
 
     def __init__(self, name=None, **kwargs):
         super(BlogSpider, self).__init__(name, **kwargs)
@@ -76,19 +80,23 @@ class BlogSpider(scrapy.Spider):
         self.html_tmpl.new_content()
         self.fill_meta(response)
 
-        # self.download_cover(response)
+        # self.fetch_cover(response)
 
         content = response.css('div#content').extract_first()
         self.html_tmpl.set_body(content)
 
         content = self.html_tmpl.content
-        content = self.remove_tag_by_class(content, 'ssba')
-        content = self.remove_tag_by_class(content, 'breadcrumb')
+        # content = self.remove_tag_by_class(content, 'ssba')
+        # content = self.remove_tag_by_class(content, 'breadcrumb')
         content = self.fix_xhtml(content)
 
         if os.path.isdir(self.html_dir):
             shutil.rmtree(self.html_dir)
         os.makedirs(self.html_dir)
+
+        if os.path.isdir(self.images_dir):
+            shutil.rmtree(self.images_dir)
+        os.makedirs(self.images_dir)
 
         self.html_tmpl.set_body(content)
         f = codecs.open(os.path.join(self.html_dir, '00.html'), mode='w', encoding='utf-8')
@@ -104,13 +112,13 @@ class BlogSpider(scrapy.Spider):
             text = c.css('a::text').extract_first()
             onclick = c.css('::attr(onclick)').extract_first()
             m = re.match(r'.*\((.*)\)', onclick)
-            body = m.group(1)[1:len(m.group(1))-1]
-            url = 'http://vnthuquan.net/truyen/chuonghoi_moi.aspx?&rand=' + str(random.random()*1000)
+            body = m.group(1)[1:len(m.group(1)) - 1]
+            url = 'http://vnthuquan.net/truyen/chuonghoi_moi.aspx?&rand=' + str(random.random() * 1000)
             headers = {'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded'}
-            request = scrapy.Request(url, callback=self.parse_chapter, method='POST', body=body, 
-                                    headers=headers)
+            request = scrapy.Request(url, callback=self.parse_chapter, method='POST', body=body,
+                                     headers=headers)
             request.meta['_index'] = self.index
-            
+
             yield request
 
             nav_points += u"""
@@ -142,24 +150,70 @@ class BlogSpider(scrapy.Spider):
         f.write(self.content_tmpl.content)
 
     def parse_chapter(self, response):
+        if response.meta['_index'] == 1:
+            self.fetch_cover(response)
+
         self.html_tmpl.new_content()
         self.fill_meta(response)
 
         content = response.text
         token = '--!!tach_noi_dung!!--'
         idx = [i.start() for i in re.finditer(token, content)]
-        content = content[idx[1]+len(token):idx[2]]
+        content = content[idx[0] + len(token):idx[2]]
+        content = content.replace(token, '')
         content = u'<div>{}</div>'.format(content)
         self.html_tmpl.set_body(content)
 
         content = self.html_tmpl.content
-        content = self.remove_tag_by_class(content, 'ssba')
-        content = self.remove_tag_by_class(content, 'breadcrumb')
-        content = self.remove_tag_by_id(content, 'chuhoain')
+        content = self.process(content)
         content = self.fix_xhtml(content)
 
-        f = codecs.open(os.path.join(self.html_dir, '{:0>2}.html'.format(response.meta['_index'])), mode='w', encoding='utf-8')
+        f = codecs.open(os.path.join(self.html_dir, '{:0>2}.html'.format(response.meta['_index'])), mode='w',
+                        encoding='utf-8')
         f.write(content)
+
+    def process(self, content):
+        parser = HTMLParser(encoding='utf-8', recover=True)
+        tree = et.parse(StringIO(content), parser)
+
+        # Replace first letter image if exists
+        self.fix_first_letter_image(tree)
+
+        # Convert remote image links to local (along with download images)
+        self.process_image_tags(tree)
+
+        # Remove unneeded tags
+        self.remove_tag_by_class(tree, 'ssba')
+        self.remove_tag_by_id(tree, 'breadcrumb')
+
+        return et.tostring(tree, encoding='utf-8', with_tail=False).decode('utf-8')
+
+    def fix_first_letter_image(self, tree):
+        # Find the div with id 'chuhoain'
+        div = tree.xpath('//div[@id="chuhoain"]')
+        if div:
+            div = div[0]
+            # Find the image
+            src = div.xpath('//img/@src')
+            if not src:
+                return
+
+            src = src[0]
+            # Extract letter
+            try:
+                letter = src[src.rindex('.') - 1]
+            except:
+                return
+
+            # Find its siblings
+            siblings = div.xpath('./following-sibling::*')
+
+            # Find the first sibling with a non-empty tail
+            for i in siblings:
+                if i.tail.strip():
+                    i.tail = letter + i.tail.strip()
+                    div.getparent().remove(div)
+                    break
 
     def fill_meta(self, response):
         title = response.xpath('//title/text()').extract_first()
@@ -169,24 +223,30 @@ class BlogSpider(scrapy.Spider):
         self.html_tmpl.set_content_type(content_type if content_type else 'text/html; charset=UTF-8')
         self.html_tmpl.set_description(description if description else '')
 
-    def remove_tag_by_id(self, content, id):
+    def remove_tag_by_id(self, tree, id):
         # return content
-        parser = HTMLParser(encoding='utf-8', recover=True)
-        tree = et.parse(StringIO(content), parser)
         for element in tree.xpath('//div[@id="{}"]'.format(id)):
             element.getparent().remove(element)
-        return et.tostring(tree, encoding='utf-8', with_tail=False).decode('utf-8')
 
-    def remove_tag_by_class(self, content, cls):
-        # return content
-        parser = HTMLParser(encoding='utf-8', recover=True)
-        tree = et.parse(StringIO(content), parser)
+    def remove_tag_by_class(self, tree, cls):
         for element in tree.xpath('//div[contains(@class, "{}")]'.format(cls)):
             element.getparent().remove(element)
-        return et.tostring(tree, encoding='utf-8', with_tail=False).decode('utf-8')
+
+    def process_image_tags(self, tree):
+        imgs = tree.xpath('//img')
+
+        if imgs:
+            for i in imgs:
+                url = i.get('src')
+                name = BlogSpider.random_name()
+                name = BlogSpider.download_image(url, self.images_dir, name)
+                if name:
+                    i.set('src', '../images/' + name)
 
     def fix_xhtml(self, content):
-        # return content
+        """ Convert content to xhtml compliance
+         :param content: HTML to convert
+        """
         v, e = TD(content, options={'output-xhtml': 1})
         return v
 
@@ -202,4 +262,44 @@ class BlogSpider(scrapy.Spider):
                 img.save('cover.jpeg')
             shutil.move('cover.jpeg', os.path.join(OUT_DIR, 'cover.jpeg'))
 
+    def fetch_cover(self, response):
+        # inspect_response(response, self)
+        shutil.copy(os.path.join(TMPL_DIR, 'cover.jpeg'), os.path.join(OUT_DIR, 'cover.jpeg'))
+        css = response.xpath('//style[contains(., "background:url")]')
+        if css:
+            css = response.xpath('//style[contains(., "background:url")]/text()').extract_first().strip()
+            match = re.match(r'.*background:url\((.*)\).*', css)
 
+            if match and match.group(1):
+                src = match.group(1)
+                try:
+                    _, r = urlretrieve(src, 'cover')
+                except:
+                    print('Download cover failed')
+                    return
+                extension = r.get_content_type().split('/')[1]
+                shutil.move('cover', 'cover.' + extension)
+                if extension != 'jpeg':
+                    img = Image.open('cover.' + extension)
+                    img.save('cover.jpeg')
+                shutil.move('cover.jpeg', os.path.join(OUT_DIR, 'cover.jpeg'))
+
+    @classmethod
+    def download_image(cls, url, path, filename):
+        """
+        :param url: url to download
+        :param path: directory to store image
+        :param filename: file name (without extension) to store image
+        :return: file name with extension or None
+        """
+        try:
+            _, r = urlretrieve(url, os.path.join(path, filename))
+            extension = r.get_content_type().split('/')[1]
+            shutil.move(os.path.join(path, filename), os.path.join(path, filename + '.' + extension))
+            return filename + '.' + extension
+        except:
+            return None
+
+    @classmethod
+    def random_name(cls, length=8):
+        return ''.join(random.choice(string.ascii_lowercase + string.digits) for _ in range(length))
