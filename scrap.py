@@ -60,7 +60,7 @@ class Template:
 class BlogSpider(scrapy.Spider):
     name = 'blogspider'
     # start_urls = ['http://www.vinadia.org/dem-giua-ban-ngay-vu-thu-hien/']
-    start_urls = ['http://vnthuquan.net/truyen/truyen.aspx?tid=2qtqv3m3237nqnnn1nqn31n343tq83a3q3m3237nvn']
+    start_urls = ['http://vnthuquan.net/truyen/truyen.aspx?tid=2qtqv3m3237nvntn1n4n31n343tq83a3q3m3237nvn']
     # start_urls = ['http://www.vinadia.org/ai-giet-anh-em-ngo-dinh-diem/']
     html_tmpl = Template(os.path.join(TMPL_DIR, 'html.html'))
     content_tmpl = Template(os.path.join(TMPL_DIR, 'content.opf'))
@@ -281,7 +281,8 @@ class BlogSpider(scrapy.Spider):
                 shutil.move('cover', 'cover.' + extension)
                 if extension != 'jpeg':
                     img = Image.open('cover.' + extension)
-                    img.save('cover.jpeg')
+                    # inspect_response(response, self)
+                    img.convert('RGB').save('cover.jpeg')
                 shutil.move('cover.jpeg', os.path.join(OUT_DIR, 'cover.jpeg'))
 
     @classmethod
